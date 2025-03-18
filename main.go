@@ -138,6 +138,8 @@ func getLogs(c *gin.Context) {
 
 // Main Function
 func main() {
+	gin.SetMode(gin.ReleaseMode)
+
 	initDB()
 	defer db.Close()
 
