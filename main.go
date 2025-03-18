@@ -86,7 +86,7 @@ func receiveLogs(c *gin.Context) {
 	fmt.Println(("Headers:"), c.Request.Header)
 	// Ensure the request comes from Heroku Logplex
 	userAgent := c.GetHeader("User-Agent")
-	if !strings.Contains(userAgent, "Logplex") {
+	if !strings.Contains(userAgent, "Logplex") && !strings.Contains(userAgent, "logfwd") {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized source"})
 		return
 	}
