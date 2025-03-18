@@ -91,6 +91,7 @@ func batchSaveLogs(logs []LogEntry) error {
 	query = strings.TrimSuffix(query, ",")
 
 	_, err := db.Exec(query, args...)
+	fmt.Println("Batch insert query:", query)
 	return err
 }
 
@@ -128,7 +129,6 @@ func flushLogs() {
 
 // Heroku (No Authentication)
 func receiveLogs(c *gin.Context) {
-	fmt.Println(("Headers:"), c.Request.Header)
 	userAgent := c.GetHeader("User-Agent")
 	if !strings.Contains(userAgent, "Logplex") && !strings.Contains(userAgent, "logfwd") {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized source"})
@@ -157,6 +157,7 @@ func receiveLogs(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "Log entry received"})
+	fmt.Println("Log entry received:")
 }
 
 func getLogs(c *gin.Context) {
