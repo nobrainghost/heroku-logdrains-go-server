@@ -81,31 +81,39 @@ func saveLog(source, message string) error {
 }
 
 func receiveLogs(c *gin.Context) {
+	herokuUserAgent := "Logplex"
+	userAgent := c.GetHeader("User-Agent")
+
+	if !strings.Contains(userAgent, herokuUserAgent) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+		c.Abort()
+		return
+	}
+
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error reading request body"})
 		return
 	}
-	logData := strings.TrimSpace(string(body))
 
+	logData := strings.TrimSpace(string(body))
 	parts := strings.SplitN(logData, " ", 2)
 	if len(parts) < 2 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid log entry"})
 		return
 	}
+
 	source := parts[0]
 	message := parts[1]
 
-	//Asynchronous Save
 	go func() {
 		err := saveLog(source, message)
 		if err != nil {
 			fmt.Println("Error saving log entry: ", err)
 		}
 	}()
-	fmt.Println("Log entry saved successfully")
-	c.JSON(http.StatusOK, gin.H{"status": "Log entry saved"})
 
+	c.JSON(http.StatusOK, gin.H{"status": "Log entry saved"})
 }
 
 func getLogs(c *gin.Context) {
@@ -129,10 +137,11 @@ func getLogs(c *gin.Context) {
 }
 
 func main() {
+	gin.SetMode(gin.ReleaseMode)
+
 	initDB()
 	router := gin.Default()
-
-	// Apply middleware
+	router.SetTrustedProxies([]string{"0.0.0.0"})
 	router.Use(rateLimitMiddleware())
 
 	// Public route for Heroku logs
