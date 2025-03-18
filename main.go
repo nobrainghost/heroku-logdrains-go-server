@@ -24,7 +24,6 @@ type LogEntry struct {
 	Message   string    `json:"message"`
 }
 
-// Initialize Database
 func initDB() {
 	var err error
 	connstr := os.Getenv("DATABASE_URL")
@@ -48,7 +47,6 @@ func initDB() {
 	}
 }
 
-// Save Log Entry
 func saveLog(source, message string) error {
 	_, err := db.Exec("INSERT INTO logs (source, message) VALUES ($1, $2)", source, message)
 	return err
@@ -68,7 +66,7 @@ func apiAuthentication() gin.HandlerFunc {
 	}
 }
 
-// Middleware: Rate Limiting (only for secure routes)
+// Middleware Rate Limiting
 func rateLimitMiddleware() gin.HandlerFunc {
 	bucket := ratelimit.NewBucket(1*time.Second, 5)
 	return func(c *gin.Context) {
@@ -81,7 +79,7 @@ func rateLimitMiddleware() gin.HandlerFunc {
 	}
 }
 
-// Receive Logs from Heroku (No Authentication)
+// Heroku (No Authentication)
 func receiveLogs(c *gin.Context) {
 	fmt.Println(("Headers:"), c.Request.Header)
 	// Ensure the request comes from Heroku Logplex
@@ -105,7 +103,7 @@ func receiveLogs(c *gin.Context) {
 	}
 	source, message := parts[0], parts[1]
 
-	// Save Log Asynchronously
+	// Save Asynchronously
 	go func() {
 		err := saveLog(source, message)
 		if err != nil {
@@ -117,6 +115,18 @@ func receiveLogs(c *gin.Context) {
 }
 
 func getLogs(c *gin.Context) {
+	expectedAPIKey := os.Getenv("LOG_API_KEY")
+	if expectedAPIKey == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Server misconfiguration: API key missing"})
+		return
+	}
+
+	apiKey := c.GetHeader("X-API-Key")
+	if apiKey != expectedAPIKey {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized: Invalid API key"})
+		return
+	}
+
 	rows, err := db.Query("SELECT id, source, timestamp, message FROM logs ORDER BY timestamp DESC LIMIT 100")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch logs"})
@@ -137,7 +147,6 @@ func getLogs(c *gin.Context) {
 	c.JSON(http.StatusOK, logs)
 }
 
-// Main Function
 func main() {
 	gin.SetMode(gin.ReleaseMode)
 
@@ -148,7 +157,7 @@ func main() {
 
 	router.POST("/logs", receiveLogs)
 
-	// Secure Routes for Fetching Logs
+	// Secure Fetch Routes
 	authorized := router.Group("/")
 	authorized.Use(apiAuthentication(), rateLimitMiddleware())
 	authorized.GET("/logs", getLogs)
