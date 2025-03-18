@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -17,11 +18,13 @@ import (
 
 var db *sql.DB
 
+var logChannel = make(chan LogEntry, 100)
+var flushInterval = 5 * time.Minute
+
 type LogEntry struct {
-	ID        int       `json:"id"`
-	Source    string    `json:"source"`
-	TimeStamp time.Time `json:"timestamp"`
-	Message   string    `json:"message"`
+	Source    string
+	TimeStamp time.Time
+	Message   string
 }
 
 func initDB() {
@@ -45,11 +48,6 @@ func initDB() {
 	if err != nil {
 		log.Fatal("Failed to create table:", err)
 	}
-}
-
-func saveLog(source, message string) error {
-	_, err := db.Exec("INSERT INTO logs (source, message) VALUES ($1, $2)", source, message)
-	return err
 }
 
 // Middleware: API Authentication
@@ -78,11 +76,59 @@ func rateLimitMiddleware() gin.HandlerFunc {
 		c.Next()
 	}
 }
+func batchSaveLogs(logs []LogEntry) error {
+	if len(logs) == 0 {
+		return nil
+	}
+
+	// bulk insert query
+	query := "INSERT INTO logs (source, timestamp, message) VALUES "
+	var args []interface{}
+	for i, log := range logs {
+		query += fmt.Sprintf("($%d, $%d, $%d),", i*3+1, i*3+2, i*3+3)
+		args = append(args, log.Source, log.TimeStamp, log.Message)
+	}
+	query = strings.TrimSuffix(query, ",")
+
+	_, err := db.Exec(query, args...)
+	return err
+}
+
+func flushLogs() {
+	ticker := time.NewTicker(flushInterval)
+	defer ticker.Stop()
+
+	var logs []LogEntry
+	var mu sync.Mutex
+
+	for {
+		select {
+		case logEntry := <-logChannel:
+			mu.Lock()
+			logs = append(logs, logEntry)
+			mu.Unlock()
+
+		case <-ticker.C:
+			mu.Lock()
+			if len(logs) > 0 {
+				if err := batchSaveLogs(logs); err != nil {
+					fmt.Println("Error saving batch logs:", err)
+				}
+				logs = nil // Clear logs after flush
+			}
+			mu.Unlock()
+		}
+	}
+}
+
+// func saveLog(source, message string) error {
+// 	_, err := db.Exec("INSERT INTO logs (source, message) VALUES ($1, $2)", source, message)
+// 	return err
+// }
 
 // Heroku (No Authentication)
 func receiveLogs(c *gin.Context) {
 	fmt.Println(("Headers:"), c.Request.Header)
-	// Ensure the request comes from Heroku Logplex
 	userAgent := c.GetHeader("User-Agent")
 	if !strings.Contains(userAgent, "Logplex") && !strings.Contains(userAgent, "logfwd") {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized source"})
@@ -103,15 +149,14 @@ func receiveLogs(c *gin.Context) {
 	}
 	source, message := parts[0], parts[1]
 
-	// Save Asynchronously
-	go func() {
-		err := saveLog(source, message)
-		if err != nil {
-			fmt.Println("Error saving log entry:", err)
-		}
-	}()
+	// Push to channel instead of writing to DB immediately
+	logChannel <- LogEntry{
+		Source:    source,
+		TimeStamp: time.Now(),
+		Message:   message,
+	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "Log entry saved"})
+	c.JSON(http.StatusOK, gin.H{"status": "Log entry received"})
 }
 
 func getLogs(c *gin.Context) {
@@ -137,7 +182,7 @@ func getLogs(c *gin.Context) {
 	var logs []LogEntry
 	for rows.Next() {
 		var log LogEntry
-		if err := rows.Scan(&log.ID, &log.Source, &log.TimeStamp, &log.Message); err != nil {
+		if err := rows.Scan(&log.Source, &log.TimeStamp, &log.Message); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error scanning logs"})
 			return
 		}
@@ -153,8 +198,10 @@ func main() {
 	initDB()
 	defer db.Close()
 
-	router := gin.Default()
+	// Start log flushing goroutine
+	go flushLogs()
 
+	router := gin.Default()
 	router.POST("/logs", receiveLogs)
 
 	// Secure Fetch Routes
